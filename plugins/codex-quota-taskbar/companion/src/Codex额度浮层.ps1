@@ -91,6 +91,33 @@ function Ensure-Directory {
     }
 }
 
+function Test-ScriptMarker {
+    param(
+        [string]$Path,
+        [string]$Marker
+    )
+
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+
+    $firstLine = Get-Content -LiteralPath $Path -Encoding UTF8 -TotalCount 1
+    return ([string]$firstLine).Trim() -eq "# $Marker"
+}
+
+function Find-SiblingScript {
+    param([string]$Marker)
+
+    $match = Get-ChildItem -LiteralPath $PSScriptRoot -Filter "*.ps1" -File | Where-Object {
+        Test-ScriptMarker $_.FullName $Marker
+    } | Select-Object -First 1
+
+    if (-not $match) {
+        return ""
+    }
+    return $match.FullName
+}
+
 $script:appDataDir = Get-AppDataDirectory
 $script:localDataDir = Get-LocalDataDirectory
 Ensure-Directory $script:appDataDir
@@ -271,6 +298,32 @@ function Stop-CodexAppServer {
         Stop-Process -Id $Server.Process.Id -Force -ErrorAction SilentlyContinue
     }
     Remove-RuntimeState
+}
+
+function Request-CompanionExit {
+    $stopMonitorScript = Find-SiblingScript "CODEX_QUOTA_STOP_MONITOR_ENTRY"
+    if (-not $stopMonitorScript) {
+        Write-OverlayLog "Stop monitor script not found. Falling back to overlay-only exit."
+        return $false
+    }
+
+    try {
+        $powershell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        if (-not (Test-Path -LiteralPath $powershell)) {
+            $powershell = "powershell.exe"
+        }
+        Write-OverlayLog "Requesting full companion exit by $stopMonitorScript"
+        Start-Process `
+            -FilePath $powershell `
+            -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", $stopMonitorScript) `
+            -WindowStyle Hidden `
+            -ErrorAction Stop | Out-Null
+        return $true
+    }
+    catch {
+        Write-OverlayLog "Full companion exit request failed: $($_.Exception.Message)"
+        return $false
+    }
 }
 
 function Write-RuntimeState {
@@ -2048,6 +2101,9 @@ try {
         [void](Show-CodexWindow)
     })
     $exitItem.add_Click({
+        if (Request-CompanionExit) {
+            return
+        }
         if ($script:timer) { $script:timer.Stop() }
         if ($script:positionTimer) { $script:positionTimer.Stop() }
         if ($script:topmostTimer) { $script:topmostTimer.Stop() }
