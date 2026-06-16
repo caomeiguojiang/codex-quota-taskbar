@@ -1212,6 +1212,12 @@ function Ensure-OverlayTopmost {
     }
 }
 
+function Ensure-AllOverlaysTopmost {
+    foreach ($entry in $script:forms) {
+        Ensure-OverlayTopmost $entry.Window
+    }
+}
+
 function Configure-OverlayWindow {
     param($Window)
 
@@ -1904,11 +1910,9 @@ try {
 
     $topmostTimer = [System.Windows.Threading.DispatcherTimer]::new()
     $script:topmostTimer = $topmostTimer
-    $topmostTimer.Interval = [TimeSpan]::FromSeconds(5)
+    $topmostTimer.Interval = [TimeSpan]::FromMilliseconds(500)
     $topmostTimer.add_Tick({
-        foreach ($entry in $script:forms) {
-            Ensure-OverlayTopmost $entry.Window
-        }
+        Ensure-AllOverlaysTopmost
     })
 
     Update-OverlayPositions
