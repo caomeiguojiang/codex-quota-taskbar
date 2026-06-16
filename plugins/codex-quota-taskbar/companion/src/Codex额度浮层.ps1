@@ -1716,9 +1716,9 @@ function Show-CodexWindow {
             return $true
         }
 
-        [UInt32]$pid = 0
-        [void][CodexQuotaWin32]::GetWindowThreadProcessId($hWnd, [ref]$pid)
-        if ($targetProcessIds -contains [int]$pid) {
+        [UInt32]$windowProcessId = 0
+        [void][CodexQuotaWin32]::GetWindowThreadProcessId($hWnd, [ref]$windowProcessId)
+        if ($targetProcessIds -contains [int]$windowProcessId) {
             $script:codexWindowToActivate = $hWnd
             return $false
         }
