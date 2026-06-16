@@ -1548,10 +1548,18 @@ function Save-VisualQaArtifacts {
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 public static class CodexQuotaWin32
 {
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+    public const UInt32 EVENT_SYSTEM_FOREGROUND = 0x0003;
+    public const UInt32 EVENT_OBJECT_SHOW = 0x8002;
+    public const UInt32 EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+    public const UInt32 WINEVENT_OUTOFCONTEXT = 0x0000;
+    public const UInt32 WINEVENT_SKIPOWNPROCESS = 0x0002;
+    public const UInt32 GA_ROOT = 2;
+    public const Int32 OBJID_WINDOW = 0;
     public const Int32 GWL_EXSTYLE = -20;
     public const Int32 WS_EX_TOOLWINDOW = 0x00000080;
     public const Int32 WS_EX_NOACTIVATE = 0x08000000;
@@ -1563,12 +1571,25 @@ public static class CodexQuotaWin32
     public const Int32 SW_RESTORE = 9;
 
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    public delegate void WinEventDelegate(IntPtr hWinEventHook, UInt32 eventType, IntPtr hWnd, Int32 idObject, Int32 idChild, UInt32 dwEventThread, UInt32 dwmsEventTime);
 
     [DllImport("user32.dll")]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, UInt32 uFlags);
 
     [DllImport("user32.dll")]
+    public static extern IntPtr SetWinEventHook(UInt32 eventMin, UInt32 eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, UInt32 idProcess, UInt32 idThread, UInt32 dwFlags);
+
+    [DllImport("user32.dll")]
+    public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    [DllImport("user32.dll")]
     public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetAncestor(IntPtr hWnd, UInt32 gaFlags);
 
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hWnd);
@@ -1653,6 +1674,140 @@ function Show-CodexWindow {
     return $true
 }
 
+function Get-WindowClassName {
+    param([IntPtr]$Handle)
+
+    if ($Handle -eq [IntPtr]::Zero) {
+        return ""
+    }
+
+    $builder = [System.Text.StringBuilder]::new(256)
+    $length = [CodexQuotaWin32]::GetClassName($Handle, $builder, $builder.Capacity)
+    if ($length -le 0) {
+        return ""
+    }
+
+    return $builder.ToString()
+}
+
+function Test-IsTaskbarRelatedWindow {
+    param([IntPtr]$Handle)
+
+    if ($Handle -eq [IntPtr]::Zero) {
+        return $false
+    }
+
+    $taskbarClasses = @("Shell_TrayWnd", "Shell_SecondaryTrayWnd")
+    $className = Get-WindowClassName $Handle
+    if ($taskbarClasses -contains $className) {
+        return $true
+    }
+
+    $rootHandle = [CodexQuotaWin32]::GetAncestor($Handle, [CodexQuotaWin32]::GA_ROOT)
+    if ($rootHandle -ne [IntPtr]::Zero -and $rootHandle -ne $Handle) {
+        $rootClassName = Get-WindowClassName $rootHandle
+        if ($taskbarClasses -contains $rootClassName) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Request-OverlayTopmostRefresh {
+    if ($script:topmostEventPending) {
+        return
+    }
+
+    if (-not $script:wpfApp -or -not $script:wpfApp.Dispatcher) {
+        Ensure-AllOverlaysTopmost
+        return
+    }
+
+    $script:topmostEventPending = $true
+    try {
+        [void]$script:wpfApp.Dispatcher.BeginInvoke(
+            [Action]{
+                try {
+                    Ensure-AllOverlaysTopmost
+                }
+                finally {
+                    $script:topmostEventPending = $false
+                }
+            },
+            [System.Windows.Threading.DispatcherPriority]::Send
+        )
+    }
+    catch {
+        $script:topmostEventPending = $false
+        Write-OverlayLog "Topmost event dispatch failed: $($_.Exception.Message)"
+    }
+}
+
+function Register-TaskbarWinEventHooks {
+    if ($script:taskbarWinEventHooks -and $script:taskbarWinEventHooks.Count -gt 0) {
+        return
+    }
+
+    $script:taskbarWinEventHooks = @()
+    $script:taskbarWinEventCallback = [CodexQuotaWin32+WinEventDelegate]{
+        param(
+            [IntPtr]$hook,
+            [uint32]$eventType,
+            [IntPtr]$windowHandle,
+            [int]$idObject,
+            [int]$idChild,
+            [uint32]$eventThread,
+            [uint32]$eventTime
+        )
+
+        try {
+            if ($windowHandle -eq [IntPtr]::Zero -or $idObject -ne [CodexQuotaWin32]::OBJID_WINDOW) {
+                return
+            }
+            if (Test-IsTaskbarRelatedWindow $windowHandle) {
+                Request-OverlayTopmostRefresh
+            }
+        }
+        catch {
+            Write-OverlayLog "Taskbar WinEvent callback failed: $($_.Exception.Message)"
+        }
+    }
+
+    $flags = [CodexQuotaWin32]::WINEVENT_OUTOFCONTEXT -bor [CodexQuotaWin32]::WINEVENT_SKIPOWNPROCESS
+    $ranges = @(
+        [pscustomobject]@{ Name = "foreground"; Min = [CodexQuotaWin32]::EVENT_SYSTEM_FOREGROUND; Max = [CodexQuotaWin32]::EVENT_SYSTEM_FOREGROUND },
+        [pscustomobject]@{ Name = "show"; Min = [CodexQuotaWin32]::EVENT_OBJECT_SHOW; Max = [CodexQuotaWin32]::EVENT_OBJECT_SHOW },
+        [pscustomobject]@{ Name = "location"; Min = [CodexQuotaWin32]::EVENT_OBJECT_LOCATIONCHANGE; Max = [CodexQuotaWin32]::EVENT_OBJECT_LOCATIONCHANGE }
+    )
+
+    foreach ($range in $ranges) {
+        $handle = [CodexQuotaWin32]::SetWinEventHook([uint32]$range.Min, [uint32]$range.Max, [IntPtr]::Zero, $script:taskbarWinEventCallback, 0, 0, [uint32]$flags)
+        if ($handle -eq [IntPtr]::Zero) {
+            Write-OverlayLog "Taskbar WinEvent hook registration failed: $($range.Name)"
+        }
+        else {
+            $script:taskbarWinEventHooks += $handle
+        }
+    }
+
+    Write-OverlayLog "Taskbar WinEvent hooks active: $($script:taskbarWinEventHooks.Count)"
+}
+
+function Unregister-TaskbarWinEventHooks {
+    if ($script:taskbarWinEventHooks) {
+        foreach ($handle in @($script:taskbarWinEventHooks)) {
+            if ($handle -ne [IntPtr]::Zero) {
+                [void][CodexQuotaWin32]::UnhookWinEvent($handle)
+            }
+        }
+    }
+
+    $script:taskbarWinEventHooks = @()
+    $script:taskbarWinEventCallback = $null
+    $script:topmostEventPending = $false
+}
+
 try {
     Write-OverlayLog "Overlay starting. PID=$PID"
     if ($MockQuota) {
@@ -1669,6 +1824,9 @@ try {
     $script:timer = $null
     $script:positionTimer = $null
     $script:topmostTimer = $null
+    $script:taskbarWinEventHooks = @()
+    $script:taskbarWinEventCallback = $null
+    $script:topmostEventPending = $false
     $script:clockReservePx = $ClockReservePx
     $script:overlayWidth = $OverlayWidth
     $script:overlayHeight = $OverlayHeight
@@ -1884,6 +2042,7 @@ try {
         if ($script:timer) { $script:timer.Stop() }
         if ($script:positionTimer) { $script:positionTimer.Stop() }
         if ($script:topmostTimer) { $script:topmostTimer.Stop() }
+        Unregister-TaskbarWinEventHooks
         foreach ($entry in $script:forms) {
             $entry.Window.Close()
         }
@@ -1910,13 +2069,14 @@ try {
 
     $topmostTimer = [System.Windows.Threading.DispatcherTimer]::new()
     $script:topmostTimer = $topmostTimer
-    $topmostTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $topmostTimer.Interval = [TimeSpan]::FromSeconds(2)
     $topmostTimer.add_Tick({
         Ensure-AllOverlaysTopmost
     })
 
     Update-OverlayPositions
     Apply-SummaryToForms $script:summary
+    Register-TaskbarWinEventHooks
 
     if ($VisualQa) {
         $visualQaTimer = [System.Windows.Threading.DispatcherTimer]::new()
@@ -1934,6 +2094,7 @@ try {
                 if ($script:timer) { $script:timer.Stop() }
                 if ($script:positionTimer) { $script:positionTimer.Stop() }
                 if ($script:topmostTimer) { $script:topmostTimer.Stop() }
+                Unregister-TaskbarWinEventHooks
                 foreach ($entry in $script:forms) {
                     $entry.Window.Close()
                 }
@@ -1961,6 +2122,7 @@ catch {
     exit 1
 }
 finally {
+    Unregister-TaskbarWinEventHooks
     Stop-CodexAppServer $script:server
 }
 
