@@ -1350,6 +1350,15 @@ function New-OverlayForm {
         if (-not $activeWindow) {
             return
         }
+        if ($eventArgs.ClickCount -ge 2) {
+            $script:dragWindow = $null
+            $script:dragScreen = $null
+            $script:isDragging = $false
+            [void](Show-CodexWindow)
+            Ensure-OverlayTopmost $activeWindow
+            $eventArgs.Handled = $true
+            return
+        }
         $script:dragWindow = $activeWindow
         $script:dragStartX = [System.Windows.Forms.Cursor]::Position.X
         $script:dragStartLeft = $activeWindow.Left
