@@ -1,0 +1,20 @@
+{
+  "name": "codex-quota-taskbar",
+  "interface": {
+    "displayName": "Codex Quota Taskbar"
+  },
+  "plugins": [
+    {
+      "name": "codex-quota-taskbar",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex-quota-taskbar"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

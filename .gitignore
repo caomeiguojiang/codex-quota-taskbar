@@ -1,0 +1,10 @@
+.DS_Store
+Thumbs.db
+
+# Local test and runtime artifacts.
+.test-profile/
+visual-qa/
+plugins/codex-quota-taskbar/companion/.test-profile/
+plugins/codex-quota-taskbar/companion/visual-qa/
+plugins/codex-quota-taskbar/companion/**/*.log
+

@@ -1,0 +1,36 @@
+{
+  "name": "codex-quota-taskbar",
+  "version": "0.1.0",
+  "description": "Manage a Windows companion app that shows Codex quota status near the taskbar.",
+  "author": {
+    "name": "Codex Quota Taskbar contributors"
+  },
+  "keywords": [
+    "codex",
+    "quota",
+    "windows",
+    "taskbar",
+    "companion-app"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Quota Taskbar",
+    "shortDescription": "Install and manage a Windows Codex quota overlay.",
+    "longDescription": "A Codex plugin that helps install, start, stop, test, update, and inspect a Windows PowerShell/WPF companion app for Codex quota status. The overlay runs as a native Windows process; the plugin does not inject UI into Codex Desktop.",
+    "developerName": "Codex Quota Taskbar contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Install and start the Codex quota taskbar overlay.",
+      "Stop the Codex quota taskbar overlay.",
+      "Run Codex quota taskbar smoke tests."
+    ],
+    "brandColor": "#2563EB",
+    "screenshots": [
+      "./assets/screenshot.png"
+    ]
+  }
+}
