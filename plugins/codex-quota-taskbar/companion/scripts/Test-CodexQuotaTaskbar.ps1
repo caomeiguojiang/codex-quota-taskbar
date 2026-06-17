@@ -56,6 +56,7 @@ if (Test-Path -LiteralPath $sourceSettings) {
 $overlayScript = Find-ScriptByMarker $srcDir "CODEX_QUOTA_OVERLAY_ENTRY"
 $stopOverlayScript = Find-ScriptByMarker $srcDir "CODEX_QUOTA_STOP_OVERLAY_ENTRY"
 $powershell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$nativeExe = Join-Path $root "bin\CodexQuotaTaskbar.exe"
 
 $oldAppData = $env:APPDATA
 $oldLocalAppData = $env:LOCALAPPDATA
@@ -74,6 +75,13 @@ try {
         throw "Mock -Once output did not include expected quota text: $onceOutput"
     }
 
+    if (Test-Path -LiteralPath $nativeExe) {
+        $nativeOnce = Start-Process -FilePath $nativeExe -ArgumentList @("--once", "--mock-quota") -Wait -PassThru -WindowStyle Hidden
+        if ($nativeOnce.ExitCode -ne 0) {
+            throw "Native mock -Once failed with exit code $($nativeOnce.ExitCode)"
+        }
+    }
+
     if (-not $SkipVisual) {
         $qaRoot = Join-Path $root "visual-qa"
         $qaDir = Join-Path $qaRoot (Get-Date -Format "yyyyMMdd-HHmmss")
@@ -88,6 +96,22 @@ try {
         }
         if (@(Get-ChildItem -LiteralPath $qaDir -Filter "*.png" -File).Count -eq 0) {
             throw "Visual QA PNG was not created: $qaDir"
+        }
+
+        if (Test-Path -LiteralPath $nativeExe) {
+            $nativeQaDir = Join-Path $qaRoot ("native-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+            New-Item -ItemType Directory -Path $nativeQaDir -Force | Out-Null
+
+            $nativeVisual = Start-Process -FilePath $nativeExe -ArgumentList @("--visual-qa", "--mock-quota", "--visual-qa-output-dir", $nativeQaDir) -Wait -PassThru -WindowStyle Hidden
+            if ($nativeVisual.ExitCode -ne 0) {
+                throw "Native visual QA failed with exit code $($nativeVisual.ExitCode)"
+            }
+            if (-not (Test-Path -LiteralPath (Join-Path $nativeQaDir "native-visual-qa.json"))) {
+                throw "Native visual QA metadata was not created: $nativeQaDir"
+            }
+            if (@(Get-ChildItem -LiteralPath $nativeQaDir -Filter "*.png" -File).Count -eq 0) {
+                throw "Native visual QA PNG was not created: $nativeQaDir"
+            }
         }
     }
 

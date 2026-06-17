@@ -11,6 +11,9 @@ $ErrorActionPreference = "Stop"
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName WindowsBase
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:overlayProcess = $null
@@ -100,19 +103,19 @@ function Show-UserError {
 }
 
 function Get-DefaultLanguage {
-    if ([System.Globalization.CultureInfo]::CurrentUICulture.Name -like "zh*") {
-        return "zh-CN"
-    }
-    return "en-US"
+    return Normalize-Language ([System.Globalization.CultureInfo]::CurrentUICulture.Name)
 }
 
 function Normalize-Language {
     param([string]$Language)
 
+    if ($Language -and $Language -like "zh*") {
+        return "zh-CN"
+    }
     if ($Language -and $Language -like "en*") {
         return "en-US"
     }
-    return "zh-CN"
+    return "en-US"
 }
 
 function T {
@@ -127,7 +130,7 @@ function T {
             "XOffset" { return "Horizontal offset" }
             "YOffset" { return "Vertical offset" }
             "Language" { return "Language" }
-            "Hint" { return "Offsets are pixels. Dragging the overlay saves horizontal offset." }
+            "Hint" { return "Saving applies immediately." }
             "Save" { return "Save" }
             "Cancel" { return "Cancel" }
             "Starting" { return "Starting..." }
@@ -152,7 +155,7 @@ function T {
         "XOffset" { return "水平偏移" }
         "YOffset" { return "垂直偏移" }
         "Language" { return "语言" }
-        "Hint" { return "偏移单位为像素。拖动浮层会自动保存水平偏移。" }
+        "Hint" { return "保存后立即应用。" }
         "Save" { return "保存" }
         "Cancel" { return "取消" }
         "Starting" { return "正在启动..." }
@@ -173,6 +176,10 @@ function T {
 }
 
 $script:language = Get-DefaultLanguage
+$settingsUiScript = Join-Path $PSScriptRoot "CodexQuotaSettingsUi.ps1"
+if (Test-Path -LiteralPath $settingsUiScript) {
+    . $settingsUiScript
+}
 
 function Get-CommandLineFilePath {
     param([string]$CommandLine)
@@ -195,12 +202,38 @@ function Test-ScriptMarker {
         [string]$Marker
     )
 
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+    if (-not $Path) {
         return $false
     }
 
-    $firstLine = Get-Content -LiteralPath $Path -Encoding UTF8 -TotalCount 1
-    return ([string]$firstLine).Trim() -eq "# $Marker"
+    try {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            return $false
+        }
+
+        $firstLine = Get-Content -LiteralPath $Path -Encoding UTF8 -TotalCount 1 -ErrorAction Stop
+        return ([string]$firstLine).Trim() -eq "# $Marker"
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-QuotaScriptPathCandidate {
+    param([string]$Path)
+
+    if (-not $Path) {
+        return $false
+    }
+
+    return (
+        $Path -like "*\CodexQuotaTaskbar\*" -or
+        $Path -like "*\codex-quota-taskbar\*" -or
+        $Path -like "*\Codex额度*.ps1" -or
+        $Path -like "*\Start-CodexQuota*.ps1" -or
+        $Path -like "*\Stop-CodexQuota*.ps1" -or
+        $Path -like "*\CodexQuotaTaskbar.ps1"
+    )
 }
 
 function Find-SiblingScript {
@@ -273,128 +306,41 @@ function Save-Settings {
 
 function Show-SettingsDialog {
     $settings = Load-Settings
-    $previousLanguage = $script:language
     $script:language = Normalize-Language ([string]$settings.Language)
     $screens = @([System.Windows.Forms.Screen]::AllScreens)
 
-    $form = [System.Windows.Forms.Form]::new()
-    $form.Text = T "SettingsTitle"
-    $form.Size = [System.Drawing.Size]::new(460, 290)
-    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-    $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
-    $form.TopMost = $true
-    $form.Font = [System.Drawing.Font]::new("Microsoft YaHei UI", 9)
+    $wasPollTimerEnabled = $false
+    if ($script:pollTimer) {
+        $wasPollTimerEnabled = $script:pollTimer.Enabled
+        if ($wasPollTimerEnabled) { $script:pollTimer.Stop() }
+    }
 
-    $monitorLabel = [System.Windows.Forms.Label]::new()
-    $monitorLabel.Text = T "Monitor"
-    $monitorLabel.Location = [System.Drawing.Point]::new(18, 22)
-    $monitorLabel.Size = [System.Drawing.Size]::new(110, 24)
-    [void]$form.Controls.Add($monitorLabel)
-
-    $monitorBox = [System.Windows.Forms.ComboBox]::new()
-    $monitorBox.Location = [System.Drawing.Point]::new(135, 19)
-    $monitorBox.Size = [System.Drawing.Size]::new(245, 26)
-    $monitorBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-    $screenDevices = New-Object System.Collections.ArrayList
-    for ($i = 0; $i -lt $screens.Count; $i++) {
-        $screen = $screens[$i]
-        $primaryText = if ($screen.Primary) { T "Primary" } else { "" }
-        $text = "{0}: {1}{2} ({3}x{4}, {5},{6})" -f ($i + 1), $screen.DeviceName, $primaryText, $screen.Bounds.Width, $screen.Bounds.Height, $screen.Bounds.X, $screen.Bounds.Y
-        [void]$monitorBox.Items.Add($text)
-        [void]$screenDevices.Add($screen.DeviceName)
-        if ($screen.DeviceName -eq $settings.TargetMonitorDevice) {
-            $monitorBox.SelectedIndex = $i
+    try {
+        $result = Show-CodexQuotaSettingsDialog `
+            -Screens $screens `
+            -CurrentDevice ([string]$settings.TargetMonitorDevice) `
+            -XOffset ([int]$settings.XOffset) `
+            -VerticalOffset ([int]$settings.VerticalOffset) `
+            -Language $script:language
+    }
+    finally {
+        if ($wasPollTimerEnabled -and $script:pollTimer) {
+            $script:pollTimer.Start()
         }
     }
-    if ($monitorBox.SelectedIndex -lt 0 -and $monitorBox.Items.Count -gt 0) {
-        $monitorBox.SelectedIndex = 0
-    }
-    [void]$form.Controls.Add($monitorBox)
 
-    $xLabel = [System.Windows.Forms.Label]::new()
-    $xLabel.Text = T "XOffset"
-    $xLabel.Location = [System.Drawing.Point]::new(18, 67)
-    $xLabel.Size = [System.Drawing.Size]::new(110, 24)
-    [void]$form.Controls.Add($xLabel)
-
-    $xInput = [System.Windows.Forms.NumericUpDown]::new()
-    $xInput.Location = [System.Drawing.Point]::new(135, 65)
-    $xInput.Size = [System.Drawing.Size]::new(92, 24)
-    $xInput.Minimum = -1000
-    $xInput.Maximum = 1000
-    $xInput.Value = [Math]::Max($xInput.Minimum, [Math]::Min($xInput.Maximum, [decimal]$settings.XOffset))
-    [void]$form.Controls.Add($xInput)
-
-    $yLabel = [System.Windows.Forms.Label]::new()
-    $yLabel.Text = T "YOffset"
-    $yLabel.Location = [System.Drawing.Point]::new(18, 107)
-    $yLabel.Size = [System.Drawing.Size]::new(110, 24)
-    [void]$form.Controls.Add($yLabel)
-
-    $yInput = [System.Windows.Forms.NumericUpDown]::new()
-    $yInput.Location = [System.Drawing.Point]::new(135, 105)
-    $yInput.Size = [System.Drawing.Size]::new(92, 24)
-    $yInput.Minimum = -100
-    $yInput.Maximum = 100
-    $yInput.Value = [Math]::Max($yInput.Minimum, [Math]::Min($yInput.Maximum, [decimal]$settings.VerticalOffset))
-    [void]$form.Controls.Add($yInput)
-
-    $languageLabel = [System.Windows.Forms.Label]::new()
-    $languageLabel.Text = T "Language"
-    $languageLabel.Location = [System.Drawing.Point]::new(18, 145)
-    $languageLabel.Size = [System.Drawing.Size]::new(110, 24)
-    [void]$form.Controls.Add($languageLabel)
-
-    $languageBox = [System.Windows.Forms.ComboBox]::new()
-    $languageBox.Location = [System.Drawing.Point]::new(135, 142)
-    $languageBox.Size = [System.Drawing.Size]::new(140, 26)
-    $languageBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-    [void]$languageBox.Items.Add("中文")
-    [void]$languageBox.Items.Add("English")
-    $languageBox.SelectedIndex = if ((Normalize-Language ([string]$settings.Language)) -eq "en-US") { 1 } else { 0 }
-    [void]$form.Controls.Add($languageBox)
-
-    $hint = [System.Windows.Forms.Label]::new()
-    $hint.Text = T "Hint"
-    $hint.Location = [System.Drawing.Point]::new(18, 182)
-    $hint.Size = [System.Drawing.Size]::new(410, 22)
-    $hint.ForeColor = [System.Drawing.Color]::FromArgb(90, 99, 110)
-    [void]$form.Controls.Add($hint)
-
-    $startButton = [System.Windows.Forms.Button]::new()
-    $startButton.Text = T "Save"
-    $startButton.Location = [System.Drawing.Point]::new(260, 214)
-    $startButton.Size = [System.Drawing.Size]::new(75, 28)
-    $startButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
-    [void]$form.Controls.Add($startButton)
-
-    $cancelButton = [System.Windows.Forms.Button]::new()
-    $cancelButton.Text = T "Cancel"
-    $cancelButton.Location = [System.Drawing.Point]::new(345, 214)
-    $cancelButton.Size = [System.Drawing.Size]::new(75, 28)
-    $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-    [void]$form.Controls.Add($cancelButton)
-
-    $form.AcceptButton = $startButton
-    $form.CancelButton = $cancelButton
-
-    $result = $form.ShowDialog()
-    if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
-        $script:language = $previousLanguage
+    if (-not $result) {
         return $false
     }
 
-    $settings.TargetMonitorDevice = [string]$screenDevices[$monitorBox.SelectedIndex]
-    $settings.XOffset = [int]$xInput.Value
-    $settings.VerticalOffset = [int]$yInput.Value
-    $settings.Language = if ($languageBox.SelectedIndex -eq 1) { "en-US" } else { "zh-CN" }
-    $script:language = Normalize-Language ([string]$settings.Language)
+    $settings.TargetMonitorDevice = [string]$result.TargetMonitorDevice
+    $settings.XOffset = [int]$result.XOffset
+    $settings.VerticalOffset = [int]$result.VerticalOffset
+    $settings.Language = Normalize-Language ([string]$result.Language)
+    $script:language = [string]$settings.Language
     Save-Settings $settings
     return $true
 }
-
 function Test-CodexDesktopOpen {
     try {
         $desktopProcesses = @(Get-CimInstance Win32_Process -Filter "Name = 'Codex.exe'" -ErrorAction Stop | Where-Object {
@@ -496,6 +442,7 @@ function Stop-OtherMonitorInstances {
     $others = Get-CimInstance Win32_Process | Where-Object {
         $filePath = Get-CommandLineFilePath $_.CommandLine
         $_.ProcessId -ne $currentPid -and
+        (Test-QuotaScriptPathCandidate $filePath) -and
         (
             (Test-ScriptMarker $filePath "CODEX_QUOTA_MONITOR_ENTRY") -or
             ($filePath -like "*\启动Codex额度监控.ps1" -or $filePath -like "*\Start-CodexQuotaMonitor.ps1")
@@ -579,7 +526,11 @@ function Start-MonitorApplication {
     [System.Windows.Forms.Application]::EnableVisualStyles()
     Stop-OtherMonitorInstances
 
-    if (-not $NoConfig) {
+    if ($NoConfig) {
+        $settings = Load-Settings
+        $script:language = Normalize-Language ([string]$settings.Language)
+    }
+    else {
         if (-not (Show-SettingsDialog)) {
             return
         }

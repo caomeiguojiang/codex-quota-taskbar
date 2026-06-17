@@ -4,15 +4,15 @@ Language: **English** | [简体中文](README.zh-CN.md)
 
 Codex Quota Taskbar is a Windows taskbar quota overlay. It shows Codex 5-hour and weekly quota remaining inside the Windows taskbar, vertically centered, with an optional Codex Desktop activity indicator.
 
-![Quota overlay centered inside the Windows taskbar](../assets/screenshot.png)
+![Quota overlay centered inside the Windows taskbar](assets/screenshot.png)
 
-![Overlay context menu](../assets/menu.png)
+![Overlay context menu](assets/menu.png)
 
 ## Task Status Sync
 
 The companion syncs the Codex Desktop conversation execution state. The status icon lives in the leftmost overlay slot and does not add text to the overlay.
 
-![Idle to Running to Complete status sync animation](../assets/task-status-sync-real.gif)
+![Idle to Running to Complete status sync animation](assets/task-status-sync-real.gif)
 
 - `Idle`: gray dot, meaning no conversation is progressing.
 - `Running`: rotating blue dashed ring, meaning at least one conversation is actively running.
@@ -27,12 +27,12 @@ No command line is required. Use Codex Desktop to add the plugin marketplace, in
 1. Open Codex Desktop.
 2. Click `Plugins` in the left sidebar.
 
-![Open Plugins from the left sidebar](../assets/desktop-sidebar-plugins.png)
+![Open Plugins from the left sidebar](assets/desktop-sidebar-plugins.png)
 
 3. On the Plugins page, click the dropdown next to the `+` button in the top-right corner.
 4. Select `Add plugin marketplace`.
 
-![Add a plugin marketplace from the Plugins page](../assets/desktop-add-marketplace-menu.png)
+![Add a plugin marketplace from the Plugins page](assets/desktop-add-marketplace-menu.png)
 
 5. In the `Add plugin marketplace` dialog, fill in the source.
 6. The source can be a plugin repository, a Git URL, or a local plugin folder path.
@@ -40,14 +40,14 @@ No command line is required. Use Codex Desktop to add the plugin marketplace, in
 8. If the plugin lives in a repository subfolder, fill in the sparse path.
 9. Click `Add marketplace`.
 
-![Add plugin marketplace dialog](../assets/desktop-add-marketplace-dialog.png)
+![Add plugin marketplace dialog](assets/desktop-add-marketplace-dialog.png)
 
 10. Return to the Plugins page and search for `Codex Quota Taskbar`.
 11. Open the plugin card, then install and enable it.
 12. Start a new Codex Desktop conversation.
 13. Type: `Install and start Codex Quota Taskbar`.
 
-![Start the plugin from a Codex Desktop conversation](../assets/desktop-start-plugin-prompt.png)
+![Start the plugin from a Codex Desktop conversation](assets/desktop-start-plugin-prompt.png)
 
 14. After installation finishes, the quota overlay appears inside the Windows taskbar.
 

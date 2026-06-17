@@ -97,12 +97,21 @@ function Test-ScriptMarker {
         [string]$Marker
     )
 
-    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+    if (-not $Path) {
         return $false
     }
 
-    $firstLine = Get-Content -LiteralPath $Path -Encoding UTF8 -TotalCount 1
-    return ([string]$firstLine).Trim() -eq "# $Marker"
+    try {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            return $false
+        }
+
+        $firstLine = Get-Content -LiteralPath $Path -Encoding UTF8 -TotalCount 1 -ErrorAction Stop
+        return ([string]$firstLine).Trim() -eq "# $Marker"
+    }
+    catch {
+        return $false
+    }
 }
 
 function Find-SiblingScript {
@@ -145,19 +154,19 @@ function Write-OverlayLog {
 }
 
 function Get-DefaultLanguage {
-    if ([System.Globalization.CultureInfo]::CurrentUICulture.Name -like "zh*") {
-        return "zh-CN"
-    }
-    return "en-US"
+    return Normalize-Language ([System.Globalization.CultureInfo]::CurrentUICulture.Name)
 }
 
 function Normalize-Language {
     param([string]$Language)
 
+    if ($Language -and $Language -like "zh*") {
+        return "zh-CN"
+    }
     if ($Language -and $Language -like "en*") {
         return "en-US"
     }
-    return "zh-CN"
+    return "en-US"
 }
 
 function T {
@@ -177,7 +186,7 @@ function T {
             "XOffset" { return "Horizontal offset" }
             "YOffset" { return "Vertical offset" }
             "Language" { return "Language" }
-            "Hint" { return "Offsets are pixels. Saving applies immediately." }
+            "Hint" { return "Saving applies immediately." }
             "Save" { return "Save" }
             "Cancel" { return "Cancel" }
             "Loading" { return "Loading..." }
@@ -205,7 +214,7 @@ function T {
         "XOffset" { return "水平偏移" }
         "YOffset" { return "垂直偏移" }
         "Language" { return "语言" }
-        "Hint" { return "偏移单位为像素。保存后立即应用到当前浮层。" }
+        "Hint" { return "保存后立即应用到当前浮层。" }
         "Save" { return "保存" }
         "Cancel" { return "取消" }
         "Loading" { return "加载中..." }
@@ -224,6 +233,10 @@ function T {
 }
 
 $script:language = Get-DefaultLanguage
+$settingsUiScript = Join-Path $PSScriptRoot "CodexQuotaSettingsUi.ps1"
+if (Test-Path -LiteralPath $settingsUiScript) {
+    . $settingsUiScript
+}
 
 function Get-CodexExe {
     param([string]$Override)
@@ -817,122 +830,41 @@ function Show-OverlaySettingsDialog {
         }
     }
 
-    $form = [System.Windows.Forms.Form]::new()
-    $form.Text = T "SettingsTitle"
-    $form.Size = [System.Drawing.Size]::new(460, 290)
-    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-    $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
-    $form.TopMost = $true
-    $form.Font = [System.Drawing.Font]::new("Microsoft YaHei UI", 9)
+    $wasPositionTimerEnabled = $false
+    if ($script:positionTimer) {
+        $wasPositionTimerEnabled = $script:positionTimer.IsEnabled
+        if ($wasPositionTimerEnabled) { $script:positionTimer.Stop() }
+    }
 
-    $monitorLabel = [System.Windows.Forms.Label]::new()
-    $monitorLabel.Text = T "Monitor"
-    $monitorLabel.Location = [System.Drawing.Point]::new(18, 22)
-    $monitorLabel.Size = [System.Drawing.Size]::new(110, 24)
-    [void]$form.Controls.Add($monitorLabel)
-
-    $monitorBox = [System.Windows.Forms.ComboBox]::new()
-    $monitorBox.Location = [System.Drawing.Point]::new(135, 19)
-    $monitorBox.Size = [System.Drawing.Size]::new(275, 26)
-    $monitorBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-    $screenDevices = New-Object System.Collections.ArrayList
-    for ($i = 0; $i -lt $screens.Count; $i++) {
-        $screen = $screens[$i]
-        $primaryText = if ($screen.Primary) { T "Primary" } else { "" }
-        $text = "{0}: {1}{2} ({3}x{4}, {5},{6})" -f ($i + 1), $screen.DeviceName, $primaryText, $screen.Bounds.Width, $screen.Bounds.Height, $screen.Bounds.X, $screen.Bounds.Y
-        [void]$monitorBox.Items.Add($text)
-        [void]$screenDevices.Add($screen.DeviceName)
-        if ($screen.DeviceName -eq $currentDevice) {
-            $monitorBox.SelectedIndex = $i
+    Ensure-AllOverlaysTopmost
+    try {
+        $result = Show-CodexQuotaSettingsDialog `
+            -Screens $screens `
+            -CurrentDevice $currentDevice `
+            -XOffset $script:xOffset `
+            -VerticalOffset $script:taskbarVerticalOffsetPx `
+            -Language $script:language `
+            -OnShown { Ensure-AllOverlaysTopmost }
+    }
+    finally {
+        if ($wasPositionTimerEnabled -and $script:positionTimer) {
+            $script:positionTimer.Start()
         }
+        Update-OverlayPositions
+        Ensure-AllOverlaysTopmost
     }
-    if ($monitorBox.SelectedIndex -lt 0) {
-        $monitorBox.SelectedIndex = 0
-    }
-    [void]$form.Controls.Add($monitorBox)
 
-    $xLabel = [System.Windows.Forms.Label]::new()
-    $xLabel.Text = T "XOffset"
-    $xLabel.Location = [System.Drawing.Point]::new(18, 67)
-    $xLabel.Size = [System.Drawing.Size]::new(110, 24)
-    [void]$form.Controls.Add($xLabel)
-
-    $xInput = [System.Windows.Forms.NumericUpDown]::new()
-    $xInput.Location = [System.Drawing.Point]::new(135, 65)
-    $xInput.Size = [System.Drawing.Size]::new(92, 24)
-    $xInput.Minimum = -1000
-    $xInput.Maximum = 1000
-    $xInput.Value = [Math]::Max($xInput.Minimum, [Math]::Min($xInput.Maximum, [decimal]$script:xOffset))
-    [void]$form.Controls.Add($xInput)
-
-    $yLabel = [System.Windows.Forms.Label]::new()
-    $yLabel.Text = T "YOffset"
-    $yLabel.Location = [System.Drawing.Point]::new(18, 107)
-    $yLabel.Size = [System.Drawing.Size]::new(110, 24)
-    [void]$form.Controls.Add($yLabel)
-
-    $yInput = [System.Windows.Forms.NumericUpDown]::new()
-    $yInput.Location = [System.Drawing.Point]::new(135, 105)
-    $yInput.Size = [System.Drawing.Size]::new(92, 24)
-    $yInput.Minimum = -100
-    $yInput.Maximum = 100
-    $yInput.Value = [Math]::Max($yInput.Minimum, [Math]::Min($yInput.Maximum, [decimal]$script:taskbarVerticalOffsetPx))
-    [void]$form.Controls.Add($yInput)
-
-    $languageLabel = [System.Windows.Forms.Label]::new()
-    $languageLabel.Text = T "Language"
-    $languageLabel.Location = [System.Drawing.Point]::new(18, 145)
-    $languageLabel.Size = [System.Drawing.Size]::new(110, 24)
-    [void]$form.Controls.Add($languageLabel)
-
-    $languageBox = [System.Windows.Forms.ComboBox]::new()
-    $languageBox.Location = [System.Drawing.Point]::new(135, 142)
-    $languageBox.Size = [System.Drawing.Size]::new(140, 26)
-    $languageBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
-    [void]$languageBox.Items.Add("中文")
-    [void]$languageBox.Items.Add("English")
-    $languageBox.SelectedIndex = if ((Normalize-Language $script:language) -eq "en-US") { 1 } else { 0 }
-    [void]$form.Controls.Add($languageBox)
-
-    $hint = [System.Windows.Forms.Label]::new()
-    $hint.Text = T "Hint"
-    $hint.Location = [System.Drawing.Point]::new(18, 182)
-    $hint.Size = [System.Drawing.Size]::new(410, 22)
-    $hint.ForeColor = [System.Drawing.Color]::FromArgb(90, 99, 110)
-    [void]$form.Controls.Add($hint)
-
-    $saveButton = [System.Windows.Forms.Button]::new()
-    $saveButton.Text = T "Save"
-    $saveButton.Location = [System.Drawing.Point]::new(260, 214)
-    $saveButton.Size = [System.Drawing.Size]::new(75, 28)
-    $saveButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
-    [void]$form.Controls.Add($saveButton)
-
-    $cancelButton = [System.Windows.Forms.Button]::new()
-    $cancelButton.Text = T "Cancel"
-    $cancelButton.Location = [System.Drawing.Point]::new(345, 214)
-    $cancelButton.Size = [System.Drawing.Size]::new(75, 28)
-    $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-    [void]$form.Controls.Add($cancelButton)
-
-    $form.AcceptButton = $saveButton
-    $form.CancelButton = $cancelButton
-
-    $result = $form.ShowDialog()
-    if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
+    if (-not $result) {
         return $false
     }
 
-    $script:targetMonitorDevice = [string]$screenDevices[$monitorBox.SelectedIndex]
-    $script:xOffset = [int]$xInput.Value
-    $script:taskbarVerticalOffsetPx = [int]$yInput.Value
-    $script:language = if ($languageBox.SelectedIndex -eq 1) { "en-US" } else { "zh-CN" }
+    $script:targetMonitorDevice = [string]$result.TargetMonitorDevice
+    $script:xOffset = [int]$result.XOffset
+    $script:taskbarVerticalOffsetPx = [int]$result.VerticalOffset
+    $script:language = Normalize-Language ([string]$result.Language)
     Save-OverlaySettings
     return $true
 }
-
 function Get-DipDeltaX {
     param(
         $Window,

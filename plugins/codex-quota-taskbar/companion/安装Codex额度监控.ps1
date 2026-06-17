@@ -44,6 +44,8 @@ function New-Shortcut {
 
 $sourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $sourceSrcDir = Join-Path $sourceDir "src"
+$sourceBinDir = Join-Path $sourceDir "bin"
+$sourceNativeDir = Join-Path $sourceDir "native"
 if (-not (Test-Path -LiteralPath $sourceSrcDir)) {
     throw "src directory not found: $sourceSrcDir"
 }
@@ -75,16 +77,32 @@ Get-ChildItem -LiteralPath $sourceSrcDir -Filter "*.ps1" -File | ForEach-Object 
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $installSrcDir $_.Name) -Force
 }
 
+if (Test-Path -LiteralPath $sourceBinDir) {
+    Copy-Item -LiteralPath $sourceBinDir -Destination $installRoot -Recurse -Force
+}
+if (Test-Path -LiteralPath $sourceNativeDir) {
+    Copy-Item -LiteralPath $sourceNativeDir -Destination $installRoot -Recurse -Force
+}
+
 $monitorScript = Find-ScriptByMarker $installSrcDir "CODEX_QUOTA_MONITOR_ENTRY"
 $stopScript = Find-ScriptByMarker $installSrcDir "CODEX_QUOTA_STOP_MONITOR_ENTRY"
 $uninstallScript = Find-ScriptByMarker $installRoot "CODEX_QUOTA_UNINSTALL_ENTRY"
 $powershell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $monitorArgs = "-NoProfile -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$monitorScript`" -NoConfig"
+$nativeExe = Join-Path $installRoot "bin\CodexQuotaTaskbar.exe"
+$startTarget = $powershell
+$startArgs = $monitorArgs
+$runValue = "`"$powershell`" $monitorArgs"
+if (Test-Path -LiteralPath $nativeExe) {
+    $startTarget = $nativeExe
+    $startArgs = "--no-config"
+    $runValue = "`"$nativeExe`" --no-config"
+}
 
 if (-not $NoAutoStart) {
     $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
     New-Item -Path $runKey -Force | Out-Null
-    Set-ItemProperty -Path $runKey -Name "CodexQuotaTaskbar" -Value "`"$powershell`" $monitorArgs"
+    Set-ItemProperty -Path $runKey -Name "CodexQuotaTaskbar" -Value $runValue
 }
 
 $programsDir = [Environment]::GetFolderPath("Programs")
@@ -92,8 +110,8 @@ $shortcutDir = Join-Path $programsDir "Codex Quota Monitor"
 New-Item -ItemType Directory -Path $shortcutDir -Force | Out-Null
 New-Shortcut `
     -Path (Join-Path $shortcutDir "Start Codex Quota Monitor.lnk") `
-    -TargetPath $powershell `
-    -Arguments $monitorArgs `
+    -TargetPath $startTarget `
+    -Arguments $startArgs `
     -WorkingDirectory $installRoot `
     -Description "Start Codex quota taskbar monitor"
 New-Shortcut `
@@ -110,7 +128,7 @@ New-Shortcut `
     -Description "Uninstall Codex quota taskbar monitor"
 
 if ($StartNow) {
-    Start-Process -FilePath $powershell -ArgumentList $monitorArgs -WindowStyle Hidden | Out-Null
+    Start-Process -FilePath $startTarget -ArgumentList $startArgs -WindowStyle Hidden | Out-Null
 }
 
 Write-Output "Installed to: $installRoot"
@@ -122,3 +140,9 @@ else {
 }
 Write-Output "Settings: %APPDATA%\CodexQuotaTaskbar\settings.json"
 Write-Output "Logs: %LOCALAPPDATA%\CodexQuotaTaskbar\logs"
+if (Test-Path -LiteralPath $nativeExe) {
+    Write-Output "Runtime: native exe"
+}
+else {
+    Write-Output "Runtime: PowerShell fallback"
+}

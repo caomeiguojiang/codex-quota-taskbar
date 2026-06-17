@@ -17,6 +17,31 @@ else {
     $root = $script:CompanionRoot
 }
 
+$nativeExe = Join-Path $root "bin\CodexQuotaTaskbar.exe"
+if (Test-Path -LiteralPath $nativeExe) {
+    $nativeArgs = @(
+        "--poll-seconds",
+        ([string]$PollSeconds)
+    )
+
+    if ($Configure) {
+        $nativeArgs += "--configure"
+    }
+    else {
+        $nativeArgs += "--no-config"
+    }
+    if ($AllScreens) {
+        $nativeArgs += "--all-screens"
+    }
+    if ($CodexExe) {
+        $nativeArgs += @("--codex-exe", $CodexExe)
+    }
+
+    Start-Process -FilePath $nativeExe -ArgumentList (Join-CodexQuotaCommandArguments $nativeArgs) -WindowStyle Hidden | Out-Null
+    Write-Output "Started native Codex quota monitor from: $root"
+    return
+}
+
 $srcDir = Join-Path $root "src"
 $monitorScript = Find-CodexQuotaScriptByMarker -Directory $srcDir -Marker "CODEX_QUOTA_MONITOR_ENTRY"
 $powershell = Get-CodexQuotaPowerShell
@@ -46,4 +71,3 @@ if ($CodexExe) {
 
 Start-Process -FilePath $powershell -ArgumentList (Join-CodexQuotaCommandArguments $monitorArgs) -WindowStyle Hidden | Out-Null
 Write-Output "Started Codex quota monitor from: $root"
-
