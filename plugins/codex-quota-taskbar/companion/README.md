@@ -1,4 +1,4 @@
-﻿# Codex Quota Taskbar Companion
+# Codex Quota Taskbar Companion
 
 Language: **English** | [简体中文](README.zh-CN.md)
 
