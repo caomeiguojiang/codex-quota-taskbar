@@ -34,22 +34,34 @@ Codex Quota Taskbar 是一个 Windows 任务栏额度浮层。它会在任务栏
 
 ![从插件页添加插件市场](../assets/desktop-add-marketplace-menu.png)
 
-5. 在「添加插件市场」弹窗里填写来源。
-6. 来源可以是插件仓库、Git URL，或本地插件文件夹路径。
-7. 如果需要固定版本，填写 Git 引用。
-8. 如果插件在仓库子目录，填写稀疏路径。
-9. 点击「添加市场」。
+5. 在「添加插件市场」弹窗里按下面内容填写：
+
+```text
+来源: caomeiguojiang/codex-quota-taskbar
+Git 引用: main
+稀疏路径: 留空
+```
+
+如果「来源」输入框不接受 GitHub 简写，改填：
+
+```text
+https://github.com/caomeiguojiang/codex-quota-taskbar.git
+```
+
+不要在「稀疏路径」里填写 `plugins/codex-quota-taskbar`。这个仓库的根目录已经包含插件市场配置，插件市场会把 Codex Desktop 指向插件子目录。
+
+6. 点击「添加市场」。
 
 ![添加插件市场弹窗](../assets/desktop-add-marketplace-dialog.png)
 
-10. 回到插件页，搜索 `Codex Quota Taskbar`。
-11. 打开插件卡片，安装并启用它。
-12. 新建一个 Codex Desktop 对话。
-13. 输入：`安装并启动 Codex Quota Taskbar`。
+7. 回到插件页，搜索 `Codex Quota Taskbar`。
+8. 打开插件卡片，安装并启用它。
+9. 新建一个 Codex Desktop 对话。
+10. 输入：`安装并启动 Codex Quota Taskbar`。
 
 ![在 Codex Desktop 对话中启动插件](../assets/desktop-start-plugin-prompt.png)
 
-14. 安装完成后，任务栏内会出现额度浮层。
+11. 安装完成后，任务栏内会出现额度浮层。
 
 ## 使用方式
 

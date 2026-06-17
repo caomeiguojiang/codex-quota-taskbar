@@ -34,22 +34,34 @@ No command line is required. Use Codex Desktop to add the plugin marketplace, in
 
 ![Add a plugin marketplace from the Plugins page](plugins/codex-quota-taskbar/assets/desktop-add-marketplace-menu.png)
 
-5. In the `Add plugin marketplace` dialog, fill in the source.
-6. The source can be a plugin repository, a Git URL, or a local plugin folder path.
-7. If you need a fixed version, fill in the Git reference.
-8. If the plugin lives in a repository subfolder, fill in the sparse path.
-9. Click `Add marketplace`.
+5. In the `Add plugin marketplace` dialog, fill in the fields exactly like this:
+
+```text
+Source: caomeiguojiang/codex-quota-taskbar
+Git reference: main
+Sparse path: leave empty
+```
+
+If the source field does not accept the short GitHub form, use:
+
+```text
+https://github.com/caomeiguojiang/codex-quota-taskbar.git
+```
+
+Do not put `plugins/codex-quota-taskbar` in `Sparse path`. This repository already has the marketplace file at the repository root; the marketplace points Codex Desktop to the plugin subfolder.
+
+6. Click `Add marketplace`.
 
 ![Add plugin marketplace dialog](plugins/codex-quota-taskbar/assets/desktop-add-marketplace-dialog.png)
 
-10. Return to the Plugins page and search for `Codex Quota Taskbar`.
-11. Open the plugin card, then install and enable it.
-12. Start a new Codex Desktop conversation.
-13. Type: `Install and start Codex Quota Taskbar`.
+7. Return to the Plugins page and search for `Codex Quota Taskbar`.
+8. Open the plugin card, then install and enable it.
+9. Start a new Codex Desktop conversation.
+10. Type: `Install and start Codex Quota Taskbar`.
 
 ![Start the plugin from a Codex Desktop conversation](plugins/codex-quota-taskbar/assets/desktop-start-plugin-prompt.png)
 
-14. After installation finishes, the quota overlay appears inside the Windows taskbar.
+11. After installation finishes, the quota overlay appears inside the Windows taskbar.
 
 ## Usage
 
