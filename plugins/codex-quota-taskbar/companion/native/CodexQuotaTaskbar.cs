@@ -1229,7 +1229,26 @@ namespace CodexQuotaTaskbar
         public RateLimitSummary Refresh()
         {
             EnsureServer();
-            return ReadRateLimits(_serverPort);
+            try
+            {
+                return ReadRateLimits(_serverPort);
+            }
+            catch (Exception firstError)
+            {
+                Logger.Overlay("Quota read failed; restarting Codex app-server once: " + firstError.Message);
+                StopServer();
+                EnsureServer();
+                try
+                {
+                    return ReadRateLimits(_serverPort);
+                }
+                catch (Exception retryError)
+                {
+                    throw new InvalidOperationException(
+                        "Codex quota refresh failed after app-server restart. First: " + firstError.Message + " Retry: " + retryError.Message,
+                        retryError);
+                }
+            }
         }
 
         public int AppServerProcessId
@@ -1289,10 +1308,24 @@ namespace CodexQuotaTaskbar
                 if (_serverProcess != null && !_serverProcess.HasExited)
                 {
                     _serverProcess.Kill();
+                    _serverProcess.WaitForExit(3000);
                 }
             }
             catch
             {
+            }
+            finally
+            {
+                try
+                {
+                    if (_serverProcess != null) _serverProcess.Dispose();
+                }
+                catch
+                {
+                }
+                _serverProcess = null;
+                _serverPort = 0;
+                _codexExe = null;
             }
             try
             {
@@ -1393,7 +1426,7 @@ namespace CodexQuotaTaskbar
                     }
                 }
 
-                Send(socket, new Dictionary<string, object> { { "id", 2 }, { "method", "account/rateLimits/read" } });
+                Send(socket, new Dictionary<string, object> { { "id", 2 }, { "method", "account/rateLimits/read" }, { "params", null } });
                 while (true)
                 {
                     Dictionary<string, object> message = Receive(socket);
@@ -1401,7 +1434,8 @@ namespace CodexQuotaTaskbar
                     {
                         if (message.ContainsKey("error") && message["error"] != null)
                         {
-                            throw new InvalidOperationException("Codex returned quota error.");
+                            JavaScriptSerializer serializer = new JavaScriptSerializer();
+                            throw new InvalidOperationException("Codex returned quota error: " + serializer.Serialize(message["error"]));
                         }
                         return ParseSummary(message);
                     }

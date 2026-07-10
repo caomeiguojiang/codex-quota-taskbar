@@ -60,7 +60,8 @@ function Get-OwnedNativeIdsFromState {
 
 function Get-Win32Processes {
     try {
-        return @(Get-CimInstance Win32_Process -ErrorAction Stop)
+        $filter = "Name = 'CodexQuotaTaskbar.exe' OR Name = 'codex.exe' OR Name = 'powershell.exe' OR Name = 'pwsh.exe'"
+        return @(Get-CimInstance Win32_Process -Filter $filter -ErrorAction Stop)
     }
     catch {
         Write-Warning "Cannot query Win32_Process: $($_.Exception.Message)"
@@ -151,7 +152,8 @@ function Test-NativeProcessCandidate {
 
 $currentPid = $PID
 $ownedNativeIds = @(Get-OwnedNativeIdsFromState)
-$nativeProcesses = @(Get-Win32Processes | Where-Object {
+$processes = @(Get-Win32Processes)
+$nativeProcesses = @($processes | Where-Object {
     $_.ProcessId -ne $currentPid -and
     (Test-ProcessAlive ([int]$_.ProcessId)) -and
     $_.Name -eq "CodexQuotaTaskbar.exe" -and
@@ -163,7 +165,7 @@ foreach ($process in $nativeProcesses) {
     Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
 }
 
-$monitorProcesses = @(Get-Win32Processes | Where-Object {
+$monitorProcesses = @($processes | Where-Object {
     $filePath = Get-CommandLineFilePath $_.CommandLine
     $_.ProcessId -ne $currentPid -and
     (Test-ProcessAlive ([int]$_.ProcessId)) -and
@@ -178,7 +180,7 @@ foreach ($process in $monitorProcesses) {
     Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
 }
 
-$overlayProcesses = @(Get-Win32Processes | Where-Object {
+$overlayProcesses = @($processes | Where-Object {
     $filePath = Get-CommandLineFilePath $_.CommandLine
     $_.ProcessId -ne $currentPid -and
     (Test-ProcessAlive ([int]$_.ProcessId)) -and
@@ -197,7 +199,7 @@ foreach ($process in $overlayProcesses) {
 
 Start-Sleep -Milliseconds 300
 
-$appServers = @(Get-Win32Processes | Where-Object {
+$appServers = @($processes | Where-Object {
     $_.ProcessId -ne $currentPid -and
     (Test-ProcessAlive ([int]$_.ProcessId)) -and
     $_.Name -eq "codex.exe" -and
@@ -235,7 +237,7 @@ if (Test-Path -LiteralPath $runtimeDir) {
     }
 }
 
-$remainingMonitors = @(Get-Win32Processes | Where-Object {
+$remainingMonitors = @($processes | Where-Object {
     $filePath = Get-CommandLineFilePath $_.CommandLine
     $_.ProcessId -ne $currentPid -and
     (Test-ProcessAlive ([int]$_.ProcessId)) -and
@@ -245,7 +247,7 @@ $remainingMonitors = @(Get-Win32Processes | Where-Object {
         ($filePath -like "*\启动Codex额度监控.ps1" -or $filePath -like "*\Start-CodexQuotaMonitor.ps1")
     )
 })
-$remainingOverlays = @(Get-Win32Processes | Where-Object {
+$remainingOverlays = @($processes | Where-Object {
     $filePath = Get-CommandLineFilePath $_.CommandLine
     $_.ProcessId -ne $currentPid -and
     (Test-ProcessAlive ([int]$_.ProcessId)) -and
@@ -255,13 +257,13 @@ $remainingOverlays = @(Get-Win32Processes | Where-Object {
         ($filePath -like "*\Codex额度浮层.ps1" -or $filePath -like "*\CodexQuotaTaskbar.ps1")
     )
 })
-$remainingNative = @(Get-Win32Processes | Where-Object {
+$remainingNative = @($processes | Where-Object {
     $_.ProcessId -ne $currentPid -and
     (Test-ProcessAlive ([int]$_.ProcessId)) -and
     $_.Name -eq "CodexQuotaTaskbar.exe" -and
     ((Test-NativeProcessCandidate $_) -or ($ownedNativeIds -contains [int]$_.ProcessId))
 })
-$remainingServers = @(Get-Win32Processes | Where-Object {
+$remainingServers = @($processes | Where-Object {
     $_.ProcessId -ne $currentPid -and
     (Test-ProcessAlive ([int]$_.ProcessId)) -and
     $_.Name -eq "codex.exe" -and
@@ -278,7 +280,5 @@ Write-Output "Remaining quota monitor processes: $($remainingMonitors.Count)"
 Write-Output "Remaining quota overlay processes: $($remainingOverlays.Count)"
 Write-Output "Remaining native quota processes: $($remainingNative.Count)"
 Write-Output "Remaining owned codex app-server processes: $($remainingServers.Count)"
-
-
 
 

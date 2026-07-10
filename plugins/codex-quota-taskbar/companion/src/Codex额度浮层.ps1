@@ -451,7 +451,7 @@ function Read-CodexRateLimits {
             params = @{
                 clientInfo = @{
                     name = "codex-quota-taskbar"
-                    version = "0.3.0"
+                    version = "0.3.1"
                 }
                 capabilities = @{
                     experimentalApi = $true
@@ -470,6 +470,7 @@ function Read-CodexRateLimits {
         Send-WebSocketJson $socket @{
             id = 2
             method = "account/rateLimits/read"
+            params = $null
         }
 
         while ($true) {
@@ -496,6 +497,25 @@ function Read-CodexRateLimits {
             }
         }
         $socket.Dispose()
+    }
+}
+
+function Read-CodexRateLimitsWithRestart {
+    try {
+        return Read-CodexRateLimits $script:server.Port
+    }
+    catch {
+        $firstError = $_.Exception.Message
+        Write-OverlayLog "Quota read failed; restarting Codex app-server once: $firstError"
+        Stop-CodexAppServer $script:server
+        $script:resolvedCodexExe = Get-CodexExe $CodexExe
+        $script:server = Start-CodexAppServer $script:resolvedCodexExe
+        try {
+            return Read-CodexRateLimits $script:server.Port
+        }
+        catch {
+            throw "Codex quota refresh failed after app-server restart. First: $firstError Retry: $($_.Exception.Message)"
+        }
     }
 }
 
@@ -1839,7 +1859,7 @@ try {
     else {
         $server = Start-CodexAppServer $resolvedCodexExe
         $script:server = $server
-        $result = Read-CodexRateLimits $server.Port
+        $result = Read-CodexRateLimitsWithRestart
         $script:summary = Convert-RateLimitSummary $result
     }
 
@@ -1995,7 +2015,7 @@ try {
                 if ($script:server.Process.HasExited) {
                     $script:server = Start-CodexAppServer $script:resolvedCodexExe
                 }
-                $result = Read-CodexRateLimits $script:server.Port
+                $result = Read-CodexRateLimitsWithRestart
                 $script:summary = Convert-RateLimitSummary $result
             }
             Update-OverlayPositions
@@ -2122,7 +2142,6 @@ finally {
     Unregister-TaskbarWinEventHooks
     Stop-CodexAppServer $script:server
 }
-
 
 
 

@@ -1,6 +1,6 @@
 {
     "name":  "codex-quota-taskbar",
-    "version":  "0.1.0",
+    "version":  "0.1.1",
     "description":  "Manage a Windows companion app that shows Codex quota status near the taskbar.",
     "author":  {
                    "name":  "Codex Quota Taskbar contributors"
