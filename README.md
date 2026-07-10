@@ -18,7 +18,7 @@ The companion syncs the Codex Desktop conversation execution state. The status i
 - `Running`: rotating blue dashed ring, meaning at least one conversation is actively running.
 - `Complete`: green check, meaning a conversation just finished; it stays visible for 5 seconds before returning to idle.
 - The preferred source is Codex Desktop IPC `thread-stream-state-changed` broadcasts.
-- When state changes from `Running` to `Complete`, the companion immediately queues one quota refresh.
+- When state changes from `Running` to `Complete`, the companion refreshes immediately and follows up after 2 and 6 seconds.
 
 ## Add It From Codex Desktop GUI
 
@@ -83,8 +83,9 @@ Do not put `plugins/codex-quota-taskbar` in `Sparse path`. This repository alrea
 - Shows running/loading while Codex is working.
 - Shows complete for 5 seconds after a conversation finishes.
 - Shows idle when no conversation is progressing.
-- Refreshes quota in the background every 15 seconds.
-- Refreshes quota immediately when Codex changes from running to complete.
+- Refreshes quota in the background every 5 seconds.
+- Refreshes quota immediately, then again after 2 and 6 seconds, when Codex changes from running to complete.
+- Prefixes the percentage with `~` when a transient backend error or inconsistent snapshot forces the overlay to retain the last trusted value.
 
 ## Settings And Runtime Data
 
@@ -121,7 +122,7 @@ PowerShell remains in the package for install, start, stop, test wrappers, and l
 
 - Taskbar visibility and topmost pulse: every 2 seconds.
 - Codex activity sampling: every 250 ms.
-- Quota remaining background refresh: every 15 seconds.
+- Quota remaining background refresh: every 5 seconds.
 - Codex changes from running to complete: queue an immediate refresh.
 - Manual refresh: overlay left-click, context menu refresh, or tray menu refresh.
 

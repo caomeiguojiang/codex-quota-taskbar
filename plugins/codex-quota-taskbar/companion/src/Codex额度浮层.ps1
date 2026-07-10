@@ -1,6 +1,6 @@
 ﻿# CODEX_QUOTA_OVERLAY_ENTRY
 param(
-    [int]$RefreshSeconds = 60,
+    [int]$RefreshSeconds = 5,
     [string]$CodexExe = "",
     [switch]$Once,
     [switch]$SecondaryOnly,
@@ -451,7 +451,7 @@ function Read-CodexRateLimits {
             params = @{
                 clientInfo = @{
                     name = "codex-quota-taskbar"
-                    version = "0.3.1"
+                    version = "0.3.2"
                 }
                 capabilities = @{
                     experimentalApi = $true
@@ -477,7 +477,7 @@ function Read-CodexRateLimits {
             $message = Receive-WebSocketJson $socket 10000
             if ($message.id -eq 2) {
                 if ($message.error) {
-                    throw $message.error.message
+                    throw "Codex returned quota error: $($message.error.message)"
                 }
                 return $message.result
             }
@@ -506,6 +506,9 @@ function Read-CodexRateLimitsWithRestart {
     }
     catch {
         $firstError = $_.Exception.Message
+        if ($firstError -like "Codex returned quota error:*") {
+            throw
+        }
         Write-OverlayLog "Quota read failed; restarting Codex app-server once: $firstError"
         Stop-CodexAppServer $script:server
         $script:resolvedCodexExe = Get-CodexExe $CodexExe
@@ -544,7 +547,13 @@ function Convert-Window {
 function Convert-RateLimitSummary {
     param($Result)
 
-    $snapshot = $Result.rateLimits
+    $snapshot = $null
+    if ($Result.rateLimitsByLimitId -and $Result.rateLimitsByLimitId.codex) {
+        $snapshot = $Result.rateLimitsByLimitId.codex
+    }
+    if ($null -eq $snapshot) {
+        $snapshot = $Result.rateLimits
+    }
     return [pscustomobject]@{
         LimitId = $snapshot.limitId
         PlanType = $snapshot.planType
@@ -554,7 +563,80 @@ function Convert-RateLimitSummary {
         IndividualLimit = $snapshot.individualLimit
         ReachedType = $snapshot.rateLimitReachedType
         CheckedAt = Get-Date
+        Stale = $false
     }
+}
+
+function Merge-RateLimitSummary {
+    param($Previous, $Current)
+
+    if ($null -eq $Previous -or $null -eq $Current) {
+        return $Current
+    }
+
+    $stale = $false
+    foreach ($name in @("FiveHour", "Weekly")) {
+        $previousWindow = $Previous.$name
+        $currentWindow = $Current.$name
+        if ($null -eq $previousWindow -or $null -eq $currentWindow) {
+            continue
+        }
+
+        if ($null -eq $previousWindow.ResetsAt -or $null -eq $currentWindow.ResetsAt) {
+            if ($currentWindow.RemainingPercent -gt ($previousWindow.RemainingPercent + 0.001)) {
+                $currentWindow.RemainingPercent = $previousWindow.RemainingPercent
+                $currentWindow.UsedPercent = $previousWindow.UsedPercent
+                $currentWindow.ResetsAt = $previousWindow.ResetsAt
+                $stale = $true
+            }
+            continue
+        }
+
+        $resetShiftSeconds = ($currentWindow.ResetsAt - $previousWindow.ResetsAt).TotalSeconds
+        if ($resetShiftSeconds -lt -120) {
+            $Current.$name = $previousWindow
+            $stale = $true
+            continue
+        }
+        if ($resetShiftSeconds -gt 120) {
+            if (
+                $currentWindow.RemainingPercent -gt ($previousWindow.RemainingPercent + 0.001) -and
+                $previousWindow.ResetsAt -gt (Get-Date).AddMinutes(2)
+            ) {
+                $Current.$name = $previousWindow
+                $stale = $true
+            }
+            continue
+        }
+
+        $currentWindow.ResetsAt = $previousWindow.ResetsAt
+        if ($currentWindow.RemainingPercent -gt ($previousWindow.RemainingPercent + 0.001)) {
+            $currentWindow.RemainingPercent = $previousWindow.RemainingPercent
+            $currentWindow.UsedPercent = $previousWindow.UsedPercent
+            $stale = $true
+        }
+    }
+    $Current.Stale = $stale
+    return $Current
+}
+
+function Select-ConservativeRateLimitSummary {
+    param($First, $Second)
+
+    if ($null -eq $First) { return $Second }
+    if ($null -eq $Second) { return $First }
+
+    if ($Second.FiveHour.RemainingPercent -lt $First.FiveHour.RemainingPercent) {
+        $First.FiveHour = $Second.FiveHour
+    }
+    if ($Second.Weekly.RemainingPercent -lt $First.Weekly.RemainingPercent) {
+        $First.Weekly = $Second.Weekly
+    }
+    if ($Second.CheckedAt -gt $First.CheckedAt) {
+        $First.CheckedAt = $Second.CheckedAt
+    }
+    $First.Stale = $false
+    return $First
 }
 
 function New-MockRateLimitSummary {
@@ -578,6 +660,7 @@ function New-MockRateLimitSummary {
         IndividualLimit = $null
         ReachedType = $null
         CheckedAt = $now
+        Stale = $false
     }
 }
 
@@ -595,7 +678,8 @@ function Format-OverlayText {
 
     $five = [Math]::Round($Summary.FiveHour.RemainingPercent)
     $week = [Math]::Round($Summary.Weekly.RemainingPercent)
-    return "5h ${five}% | W ${week}%"
+    $prefix = if ($Summary.Stale) { "~" } else { "" }
+    return "5h ${prefix}${five}% | W ${prefix}${week}%"
 }
 
 function Format-RefreshTime {
@@ -625,7 +709,8 @@ function Format-DetailText {
 
     $five = [Math]::Round($Summary.FiveHour.RemainingPercent, 1)
     $week = [Math]::Round($Summary.Weekly.RemainingPercent, 1)
-    return "$(T "FiveLeft"): ${five}% $(T "Reset") $(Format-Reset $Summary.FiveHour.ResetsAt)`r`n$(T "WeekLeft"): ${week}% $(T "Reset") $(Format-Reset $Summary.Weekly.ResetsAt)"
+    $prefix = if ($Summary.Stale) { "~" } else { "" }
+    return "$(T "FiveLeft"): ${prefix}${five}% $(T "Reset") $(Format-Reset $Summary.FiveHour.ResetsAt)`r`n$(T "WeekLeft"): ${prefix}${week}% $(T "Reset") $(Format-Reset $Summary.Weekly.ResetsAt)"
 }
 
 function Format-OnceText {
@@ -1270,11 +1355,12 @@ function Set-OverlayStyle {
         $Entry.WeekFill.Width = 0
     }
     else {
+        $prefix = if ($script:summary -and $script:summary.Stale) { "~" } else { "" }
         $Entry.RootBorder.Background = New-MediaBrush 17 20 25 245
         $Entry.FiveLabel.Text = T "QuotaRemaining"
         $Entry.WeekLabel.Text = $Entry.FiveLabel.Text
-        $Entry.FivePercent.Text = ("{0:0}%" -f [Math]::Round($FiveRemaining))
-        $Entry.WeekPercent.Text = ("{0:0}%" -f [Math]::Round($WeekRemaining))
+        $Entry.FivePercent.Text = ("{0}{1:0}%" -f $prefix, [Math]::Round($FiveRemaining))
+        $Entry.WeekPercent.Text = ("{0}{1:0}%" -f $prefix, [Math]::Round($WeekRemaining))
         $Entry.FiveTime.Text = $FiveTime
         $Entry.WeekTime.Text = $WeekTime
         $Entry.FiveFill.Width = [Math]::Max(0, [Math]::Round($Entry.BarWidth * [Math]::Max(0, [Math]::Min(100, $FiveRemaining)) / 100))
@@ -1859,8 +1945,18 @@ try {
     else {
         $server = Start-CodexAppServer $resolvedCodexExe
         $script:server = $server
-        $result = Read-CodexRateLimitsWithRestart
-        $script:summary = Convert-RateLimitSummary $result
+        $script:summary = Convert-RateLimitSummary (Read-CodexRateLimitsWithRestart)
+        foreach ($sample in 2..3) {
+            try {
+                Start-Sleep -Milliseconds 150
+                $nextSummary = Convert-RateLimitSummary (Read-CodexRateLimitsWithRestart)
+                $script:summary = Select-ConservativeRateLimitSummary $script:summary $nextSummary
+            }
+            catch {
+                Write-OverlayLog "Quota baseline validation sample $sample failed; using valid samples: $($_.Exception.Message)"
+                break
+            }
+        }
     }
 
     if ($Once) {
@@ -1986,13 +2082,14 @@ try {
         $week = $Summary.Weekly.RemainingPercent
         $fiveReset = Format-ResetTime $Summary.FiveHour.ResetsAt
         $weekReset = Format-ResetTime $Summary.Weekly.ResetsAt
+        $prefix = if ($Summary.Stale) { "~" } else { "" }
 
         foreach ($entry in $script:forms) {
             Set-OverlayStyle $entry $text $detail $five $week $fiveReset $weekReset $false
             Ensure-OverlayTopmost $entry.Window
         }
-        $script:statusFiveItem.Header = ("{0:0}% {1} {2}" -f [Math]::Round($five), (T "Reset"), $fiveReset)
-        $script:statusWeekItem.Header = ("{0:0}% {1} {2}" -f [Math]::Round($week), (T "Reset"), $weekReset)
+        $script:statusFiveItem.Header = ("{0}{1:0}% {2} {3}" -f $prefix, [Math]::Round($five), (T "Reset"), $fiveReset)
+        $script:statusWeekItem.Header = ("{0}{1:0}% {2} {3}" -f $prefix, [Math]::Round($week), (T "Reset"), $weekReset)
     }
 
     function Set-OverlayError {
@@ -2016,7 +2113,7 @@ try {
                     $script:server = Start-CodexAppServer $script:resolvedCodexExe
                 }
                 $result = Read-CodexRateLimitsWithRestart
-                $script:summary = Convert-RateLimitSummary $result
+                $script:summary = Merge-RateLimitSummary $script:summary (Convert-RateLimitSummary $result)
             }
             Update-OverlayPositions
             Apply-SummaryToForms $script:summary
@@ -2024,7 +2121,13 @@ try {
         catch {
             Write-OverlayLog "Refresh failed: $($_.Exception.Message)"
             Update-OverlayPositions
-            Set-OverlayError $_.Exception.Message
+            if ($script:summary) {
+                $script:summary.Stale = $true
+                Apply-SummaryToForms $script:summary
+            }
+            else {
+                Set-OverlayError $_.Exception.Message
+            }
         }
     }
 
@@ -2142,6 +2245,3 @@ finally {
     Unregister-TaskbarWinEventHooks
     Stop-CodexAppServer $script:server
 }
-
-
-

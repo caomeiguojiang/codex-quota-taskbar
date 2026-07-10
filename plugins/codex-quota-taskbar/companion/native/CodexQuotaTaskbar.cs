@@ -88,7 +88,7 @@ namespace CodexQuotaTaskbar
     internal sealed class Options
     {
         public int PollSeconds = 2;
-        public int QuotaRefreshSeconds = 15;
+        public int QuotaRefreshSeconds = 5;
         public bool AllScreens;
         public bool Configure;
         public bool NoConfig;
@@ -438,6 +438,7 @@ namespace CodexQuotaTaskbar
         public DateTime? FiveReset;
         public DateTime? WeekReset;
         public DateTime CheckedAt = DateTime.Now;
+        public bool Stale;
 
         public static RateLimitSummary Mock()
         {
@@ -1210,7 +1211,101 @@ namespace CodexQuotaTaskbar
         public static void Run()
         {
             CodexIpcActivitySource.RunSelfTest();
+            RunQuotaStabilizationSelfTest();
+            RunQuotaBucketSelectionSelfTest();
             Console.WriteLine("Native self-tests passed.");
+        }
+
+        private static void RunQuotaStabilizationSelfTest()
+        {
+            DateTime reset = DateTime.Now.AddHours(1);
+            RateLimitSummary previous = new RateLimitSummary
+            {
+                FiveRemaining = 40,
+                WeekRemaining = 80,
+                FiveReset = reset,
+                WeekReset = reset.AddDays(5)
+            };
+            RateLimitSummary regressive = new RateLimitSummary
+            {
+                FiveRemaining = 44,
+                WeekRemaining = 82,
+                FiveReset = reset.AddSeconds(1),
+                WeekReset = reset.AddDays(5)
+            };
+            RateLimitSummary stabilized = OverlayManager.StabilizeSummary(previous, regressive);
+            if (!stabilized.Stale || stabilized.FiveRemaining != 40 || stabilized.WeekRemaining != 80 || stabilized.FiveReset != reset)
+            {
+                throw new InvalidOperationException("Quota stabilization failed to reject a regressive snapshot.");
+            }
+
+            RateLimitSummary phantomReset = new RateLimitSummary
+            {
+                FiveRemaining = 100,
+                WeekRemaining = 100,
+                FiveReset = reset.AddHours(5),
+                WeekReset = reset.AddDays(12)
+            };
+            stabilized = OverlayManager.StabilizeSummary(previous, phantomReset);
+            if (!stabilized.Stale || stabilized.FiveRemaining != 40 || stabilized.WeekRemaining != 80)
+            {
+                throw new InvalidOperationException("Quota stabilization accepted an unconfirmed early reset window.");
+            }
+
+            previous.FiveReset = DateTime.Now.AddMinutes(-1);
+            previous.WeekReset = DateTime.Now.AddMinutes(-1);
+            RateLimitSummary resetWindow = new RateLimitSummary
+            {
+                FiveRemaining = 100,
+                WeekRemaining = 100,
+                FiveReset = DateTime.Now.AddHours(5),
+                WeekReset = DateTime.Now.AddDays(7)
+            };
+            stabilized = OverlayManager.StabilizeSummary(previous, resetWindow);
+            if (stabilized.Stale || stabilized.FiveRemaining != 100 || stabilized.WeekRemaining != 100)
+            {
+                throw new InvalidOperationException("Quota stabilization failed to accept a new reset window.");
+            }
+
+            RateLimitSummary conservative = QuotaService.ChooseConservative(previous, resetWindow);
+            if (conservative.FiveRemaining != 40 || conservative.WeekRemaining != 80)
+            {
+                throw new InvalidOperationException("Quota baseline validation failed to choose the conservative sample.");
+            }
+        }
+
+        private static void RunQuotaBucketSelectionSelfTest()
+        {
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            result["rateLimits"] = RateLimitSnapshot(3, 1);
+            result["rateLimitsByLimitId"] = new Dictionary<string, object>
+            {
+                { "codex", RateLimitSnapshot(63, 12) },
+                { "codex_bengalfox", RateLimitSnapshot(0, 0) }
+            };
+            Dictionary<string, object> message = new Dictionary<string, object> { { "result", result } };
+            RateLimitSummary parsed = QuotaService.ParseSummary(message);
+            if (parsed.FiveRemaining != 37 || parsed.WeekRemaining != 88)
+            {
+                throw new InvalidOperationException("Quota parser selected the legacy or wrong rate-limit bucket.");
+            }
+        }
+
+        private static Dictionary<string, object> RateLimitSnapshot(double primaryUsed, double secondaryUsed)
+        {
+            long reset = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds();
+            return new Dictionary<string, object>
+            {
+                { "primary", new Dictionary<string, object> { { "usedPercent", primaryUsed }, { "resetsAt", reset } } },
+                { "secondary", new Dictionary<string, object> { { "usedPercent", secondaryUsed }, { "resetsAt", reset } } }
+            };
+        }
+    }
+
+    internal sealed class CodexQuotaResponseException : InvalidOperationException
+    {
+        public CodexQuotaResponseException(string message) : base(message)
+        {
         }
     }
 
@@ -1220,6 +1315,7 @@ namespace CodexQuotaTaskbar
         private Process _serverProcess;
         private int _serverPort;
         private string _codexExe;
+        private bool _baselineValidated;
 
         public QuotaService(Options options)
         {
@@ -1228,6 +1324,32 @@ namespace CodexQuotaTaskbar
 
         public RateLimitSummary Refresh()
         {
+            RateLimitSummary first = ReadRateLimitsWithRecovery();
+            if (_baselineValidated)
+            {
+                return first;
+            }
+
+            RateLimitSummary candidate = first;
+            for (int sample = 2; sample <= 3; sample++)
+            {
+                try
+                {
+                    Thread.Sleep(150);
+                    candidate = ChooseConservative(candidate, ReadRateLimitsWithRecovery());
+                }
+                catch (Exception validationError)
+                {
+                    Logger.Overlay("Quota baseline validation sample " + sample.ToString(CultureInfo.InvariantCulture) + " failed; using valid samples: " + validationError.Message);
+                    break;
+                }
+            }
+            _baselineValidated = true;
+            return candidate;
+        }
+
+        private RateLimitSummary ReadRateLimitsWithRecovery()
+        {
             EnsureServer();
             try
             {
@@ -1235,6 +1357,10 @@ namespace CodexQuotaTaskbar
             }
             catch (Exception firstError)
             {
+                if (firstError is CodexQuotaResponseException)
+                {
+                    throw;
+                }
                 Logger.Overlay("Quota read failed; restarting Codex app-server once: " + firstError.Message);
                 StopServer();
                 EnsureServer();
@@ -1249,6 +1375,37 @@ namespace CodexQuotaTaskbar
                         retryError);
                 }
             }
+        }
+
+        internal static RateLimitSummary ChooseConservative(RateLimitSummary first, RateLimitSummary second)
+        {
+            if (first == null) return second;
+            if (second == null) return first;
+
+            RateLimitSummary selected = new RateLimitSummary();
+            if (first.FiveRemaining <= second.FiveRemaining)
+            {
+                selected.FiveRemaining = first.FiveRemaining;
+                selected.FiveReset = first.FiveReset;
+            }
+            else
+            {
+                selected.FiveRemaining = second.FiveRemaining;
+                selected.FiveReset = second.FiveReset;
+            }
+            if (first.WeekRemaining <= second.WeekRemaining)
+            {
+                selected.WeekRemaining = first.WeekRemaining;
+                selected.WeekReset = first.WeekReset;
+            }
+            else
+            {
+                selected.WeekRemaining = second.WeekRemaining;
+                selected.WeekReset = second.WeekReset;
+            }
+            selected.CheckedAt = first.CheckedAt >= second.CheckedAt ? first.CheckedAt : second.CheckedAt;
+            selected.Stale = false;
+            return selected;
         }
 
         public int AppServerProcessId
@@ -1435,7 +1592,7 @@ namespace CodexQuotaTaskbar
                         if (message.ContainsKey("error") && message["error"] != null)
                         {
                             JavaScriptSerializer serializer = new JavaScriptSerializer();
-                            throw new InvalidOperationException("Codex returned quota error: " + serializer.Serialize(message["error"]));
+                            throw new CodexQuotaResponseException("Codex returned quota error: " + serializer.Serialize(message["error"]));
                         }
                         return ParseSummary(message);
                     }
@@ -1473,10 +1630,24 @@ namespace CodexQuotaTaskbar
             }
         }
 
-        private static RateLimitSummary ParseSummary(Dictionary<string, object> message)
+        internal static RateLimitSummary ParseSummary(Dictionary<string, object> message)
         {
             Dictionary<string, object> result = (Dictionary<string, object>)message["result"];
-            Dictionary<string, object> limits = (Dictionary<string, object>)result["rateLimits"];
+            Dictionary<string, object> limits = null;
+            object byIdObject;
+            if (result.TryGetValue("rateLimitsByLimitId", out byIdObject))
+            {
+                Dictionary<string, object> byId = byIdObject as Dictionary<string, object>;
+                object codexObject;
+                if (byId != null && byId.TryGetValue("codex", out codexObject))
+                {
+                    limits = codexObject as Dictionary<string, object>;
+                }
+            }
+            if (limits == null)
+            {
+                limits = (Dictionary<string, object>)result["rateLimits"];
+            }
             Dictionary<string, object> primary = (Dictionary<string, object>)limits["primary"];
             Dictionary<string, object> secondary = (Dictionary<string, object>)limits["secondary"];
             RateLimitSummary summary = new RateLimitSummary();
@@ -1655,6 +1826,8 @@ namespace CodexQuotaTaskbar
                 if (_lastActivityState == CodexActivityState.Running && state == CodexActivityState.Complete)
                 {
                     _overlayManager.RefreshQuotaAsync("activity-complete");
+                    QueueQuotaRefreshAfter(2000, "activity-settle-2s");
+                    QueueQuotaRefreshAfter(6000, "activity-settle-6s");
                 }
                 _lastActivityState = state;
             }
@@ -1662,6 +1835,22 @@ namespace CodexQuotaTaskbar
             {
                 Logger.Error("Activity state update failed: " + ex.Message);
             }
+        }
+
+        private void QueueQuotaRefreshAfter(int delayMilliseconds, string reason)
+        {
+            System.Threading.Timer timer = null;
+            timer = new System.Threading.Timer(delegate
+            {
+                try
+                {
+                    _overlayManager.RefreshQuotaAsync(reason);
+                }
+                finally
+                {
+                    if (timer != null) timer.Dispose();
+                }
+            }, null, delayMilliseconds, Timeout.Infinite);
         }
 
         private void RefreshNow()
@@ -1936,7 +2125,19 @@ namespace CodexQuotaTaskbar
         {
             if (String.IsNullOrEmpty(error))
             {
+                RateLimitSummary previous = _summary;
+                summary = StabilizeSummary(previous, summary);
                 _summary = summary;
+                if (previous == null ||
+                    Math.Abs(previous.FiveRemaining - summary.FiveRemaining) >= 0.01 ||
+                    Math.Abs(previous.WeekRemaining - summary.WeekRemaining) >= 0.01 ||
+                    summary.Stale)
+                {
+                    Logger.Overlay(
+                        "Quota updated (" + reason + "): 5H=" + summary.FiveRemaining.ToString("0.0", CultureInfo.InvariantCulture) +
+                        "% W=" + summary.WeekRemaining.ToString("0.0", CultureInfo.InvariantCulture) +
+                        "% stale=" + summary.Stale.ToString());
+                }
                 foreach (WpfOverlayForm form in _forms)
                 {
                     form.SetSummary(_summary);
@@ -1947,12 +2148,85 @@ namespace CodexQuotaTaskbar
 
             string suffix = String.IsNullOrEmpty(reason) ? "" : " (" + reason + ")";
             Logger.Overlay("Refresh failed" + suffix + ": " + error);
+            if (_summary != null)
+            {
+                _summary.Stale = true;
+                foreach (WpfOverlayForm form in _forms)
+                {
+                    form.SetSummary(_summary);
+                }
+                UpdateMenus("");
+                return;
+            }
             _summary = null;
             foreach (WpfOverlayForm form in _forms)
             {
                 form.SetError(error);
             }
             UpdateMenus(error);
+        }
+
+        internal static RateLimitSummary StabilizeSummary(RateLimitSummary previous, RateLimitSummary current)
+        {
+            if (previous == null || current == null) return current;
+
+            bool stale = false;
+            stale |= StabilizeWindow(
+                previous.FiveRemaining,
+                previous.FiveReset,
+                ref current.FiveRemaining,
+                ref current.FiveReset);
+            stale |= StabilizeWindow(
+                previous.WeekRemaining,
+                previous.WeekReset,
+                ref current.WeekRemaining,
+                ref current.WeekReset);
+            current.Stale = stale;
+            return current;
+        }
+
+        private static bool StabilizeWindow(
+            double previousRemaining,
+            DateTime? previousReset,
+            ref double currentRemaining,
+            ref DateTime? currentReset)
+        {
+            if (!previousReset.HasValue || !currentReset.HasValue)
+            {
+                if (currentRemaining > previousRemaining + 0.001)
+                {
+                    currentRemaining = previousRemaining;
+                    currentReset = previousReset;
+                    return true;
+                }
+                return false;
+            }
+
+            double resetShiftSeconds = (currentReset.Value - previousReset.Value).TotalSeconds;
+            if (resetShiftSeconds < -120)
+            {
+                currentRemaining = previousRemaining;
+                currentReset = previousReset;
+                return true;
+            }
+            if (resetShiftSeconds > 120)
+            {
+                if (currentRemaining > previousRemaining + 0.001 && previousReset.Value > DateTime.Now.AddMinutes(2))
+                {
+                    currentRemaining = previousRemaining;
+                    currentReset = previousReset;
+                    return true;
+                }
+                return false;
+            }
+
+            currentReset = previousReset;
+            if (currentRemaining > previousRemaining + 0.001)
+            {
+                currentRemaining = previousRemaining;
+                return true;
+            }
+            return false;
         }
 
         private void BeginOnUi(Action action)
@@ -2264,12 +2538,13 @@ namespace CodexQuotaTaskbar
         {
             WpfMenuState state = menu.Tag as WpfMenuState;
             if (state == null) return;
+            string freshnessPrefix = _summary != null && _summary.Stale ? "~" : "";
 
             state.StatusFive.Header = String.IsNullOrEmpty(error) && _summary != null
-                ? Math.Round(_summary.FiveRemaining).ToString("0", CultureInfo.InvariantCulture) + "% " + _settings.T("Reset") + " " + RateLimitSummary.FormatReset(_summary.FiveReset)
+                ? freshnessPrefix + Math.Round(_summary.FiveRemaining).ToString("0", CultureInfo.InvariantCulture) + "% " + _settings.T("Reset") + " " + RateLimitSummary.FormatReset(_summary.FiveReset)
                 : _settings.T("Unavailable");
             state.StatusWeek.Header = String.IsNullOrEmpty(error) && _summary != null
-                ? Math.Round(_summary.WeekRemaining).ToString("0", CultureInfo.InvariantCulture) + "% " + _settings.T("Reset") + " " + RateLimitSummary.FormatReset(_summary.WeekReset)
+                ? freshnessPrefix + Math.Round(_summary.WeekRemaining).ToString("0", CultureInfo.InvariantCulture) + "% " + _settings.T("Reset") + " " + RateLimitSummary.FormatReset(_summary.WeekReset)
                 : (String.IsNullOrEmpty(error) ? _settings.T("Loading") : error);
             state.Refresh.Header = _settings.T("RefreshQuota");
             state.Settings.Header = _settings.T("SettingsMenu");
@@ -2963,7 +3238,7 @@ namespace CodexQuotaTaskbar
         private void ApplyQuotaRow(WpfQuotaRow row, double remaining, string reset)
         {
             row.Label.Text = _settings.T("QuotaRemaining");
-            row.Percent.Text = Math.Round(remaining).ToString("0", CultureInfo.InvariantCulture) + "%";
+            row.Percent.Text = (_summary != null && _summary.Stale ? "~" : "") + Math.Round(remaining).ToString("0", CultureInfo.InvariantCulture) + "%";
             row.Time.Text = reset;
             row.Fill.Width = Math.Max(0, Math.Round(_barWidth * Math.Max(0, Math.Min(100, remaining)) / 100.0));
         }

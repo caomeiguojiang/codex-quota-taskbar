@@ -18,7 +18,7 @@ Codex Quota Taskbar 是一个 Windows 任务栏额度浮层。它会在任务栏
 - `Running`：蓝色虚线圆环旋转，表示至少一个对话正在执行。
 - `Complete`：绿色 check，表示刚完成一次对话；默认保留 5 秒后回到 idle。
 - 状态来源优先使用 Codex Desktop IPC 的 `thread-stream-state-changed` 广播。
-- 从 `Running` 变为 `Complete` 时，会立即排队刷新一次额度。
+- 从 `Running` 变为 `Complete` 时，会立即刷新，并在 2 秒、6 秒后追加刷新。
 
 ## 通过 Codex Desktop 图形界面接入
 
@@ -83,8 +83,9 @@ https://github.com/caomeiguojiang/codex-quota-taskbar.git
 - Codex 正在执行时显示 running/loading 状态。
 - 对话完成后显示 5 秒 complete 状态。
 - 空闲时显示 idle 状态。
-- 额度每 15 秒后台刷新一次。
-- Codex 从 running 变为 complete 时立即刷新一次额度。
+- 额度每 5 秒后台刷新一次。
+- Codex 从 running 变为 complete 时立即刷新，并在 2 秒、6 秒后追加刷新。
+- 遇到后端瞬时错误或矛盾快照时，保留最后可信值，并在百分比前显示 `~`。
 
 ## 设置和运行数据
 
@@ -121,7 +122,7 @@ PowerShell 仍保留在包内，用于安装、启动、停止、测试包装和
 
 - 任务栏可见性和置顶保活：每 2 秒。
 - Codex 活动状态采样：每 250 ms。
-- 额度 remaining 后台刷新：每 15 秒。
+- 额度 remaining 后台刷新：每 5 秒。
 - Codex 从 running 变 complete：立即排队刷新一次。
 - 手动刷新：浮层左键、右键菜单刷新、托盘菜单刷新。
 
